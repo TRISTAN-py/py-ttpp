@@ -37,8 +37,17 @@ class DAOFactory(ABC):
 
 
 class GameDAOFactory(DAOFactory):
+
+    _observer: Observer = None
+
+    def __init__(self, observer=None):
+        self._observer = observer
+
     def create_DAO(self) -> DAO:
-        return GameDAO()
+        dao = GameDAO()
+        if self._observer:
+            dao.attach(self._observer)
+        return dao
 
 
 class PlatformDAOFactory(DAOFactory):
@@ -51,16 +60,29 @@ class PlatformDAOFactory(DAOFactory):
     def create_DAO(self) -> DAO:
         dao = PlatformDAO()
         if self._observer:
-            dao.attach(observer)
+            dao.attach(self._observer)
         return dao
 
 
 class GenreDAOFactory(DAOFactory):
+
+    _observer: Observer = None
+
+    def __init__(self, observer=None):
+        self._observer = observer
+
     def create_DAO(self) -> DAO:
-        return GenreDAO()
+        dao = GenreDAO()
+        if self._observer:
+            dao.attach(self._observer)
+        return dao
 
 
-class GameDAO(DAO):
+class GameDAO(DAO, Subject):
+
+    _last_action: dict = None
+    _observers: list = list()
+
     def get_all(self, dbcon: DataBaseConnection) -> list:
         con = dbcon.get_connection()
         statement = """select * from games;"""
@@ -117,6 +139,12 @@ class GameDAO(DAO):
                 except KeyError:
                     raise sqlite3.IntegrityError()
 
+        self._last_action = {
+            "action": "add",
+            "object": game
+        }
+        self.notify()
+
     def remove(self, dbcon: DataBaseConnection, object_):
         con = dbcon.get_connection()
         base_statement = """delete from games where id=:id"""
@@ -137,6 +165,12 @@ class GameDAO(DAO):
         with con:
             for td in to_delete:
                 con.execute(base_statement, {"id": td[0]})
+
+        self._last_action = {
+            "action": "remove",
+            "object": object_
+        }
+        self.notify()
 
     def update(self, dbcon: DataBaseConnection, object_old: Game.Game, object_new: Game.Game):
         con = dbcon.get_connection()
@@ -163,6 +197,23 @@ class GameDAO(DAO):
                     "name": object_new.name,
                     "price": object_new.price,
                 })
+
+        self._last_action = {
+            "action": "update",
+            "old": object_old,
+            "new": object_new
+        }
+        self.notify()
+
+    def attach(self, observer: Observer) -> None:
+        self._observers.append(observer)
+
+    def detach(self, observer: Observer) -> None:
+        self._observers.remove(observer)
+
+    def notify(self) -> None:
+        for observer in self._observers:
+            observer.update(self)
 
 
 class PlatformDAO(DAO, Subject):
@@ -267,7 +318,11 @@ class PlatformDAO(DAO, Subject):
             observer.update(self)
 
 
-class GenreDAO(DAO):
+class GenreDAO(DAO, Subject):
+
+    _last_action: dict = None
+    _observers: list = list()
+
     def get_all(self, dbcon: DataBaseConnection) -> list:
         con = dbcon.get_connection()
         statement = """select * from genres;"""
@@ -300,6 +355,12 @@ class GenreDAO(DAO):
         with con:
             con.execute(base_statement, (genre.name, ))
 
+        self._last_action = {
+            "action": "add",
+            "object": genre
+        }
+        self.notify()
+
     def remove(self, dbcon: DataBaseConnection, object_):
         con = dbcon.get_connection()
         base_statement = """delete from genres where id=:id"""
@@ -315,6 +376,12 @@ class GenreDAO(DAO):
         with con:
             for td in to_delete:
                 con.execute(base_statement, {"id": td[0]})
+
+        self._last_action = {
+            "action": "remove",
+            "object": object_
+        }
+        self.notify()
 
     def update(self, dbcon: DataBaseConnection, object_old: Genre.Genre, object_new: Genre.Genre):
         con = dbcon.get_connection()
@@ -334,6 +401,23 @@ class GenreDAO(DAO):
                     "id": tu[0],
                     "name": object_new.name
                 })
+
+            self._last_action = {
+                "action": "update",
+                "old": object_old,
+                "new": object_new
+            }
+            self.notify()
+
+    def attach(self, observer: Observer) -> None:
+        self._observers.append(observer)
+
+    def detach(self, observer: Observer) -> None:
+        self._observers.remove(observer)
+
+    def notify(self) -> None:
+        for observer in self._observers:
+            observer.update(self)
 
 
 def get_all(dbcon: DataBaseConnection, dao_factory: DAOFactory) -> list:
@@ -413,7 +497,7 @@ if __name__ == "__main__":
     f_games = filter(dbconn, GameDAOFactory(), params)
     print(f_games, "\nUpdate:")
 
-    update(dbconn, GameDAOFactory(), gameBuilder.get_object(), Game.Game("1.6", 5.99))
+    update(dbconn, GameDAOFactory(observer), gameBuilder.get_object(), Game.Game("1.6", 5.99))
     update(dbconn, PlatformDAOFactory(), platforms[0], Platform.Platform("switch"))
 
     all_games = get_all(dbconn, GameDAOFactory())
@@ -422,7 +506,7 @@ if __name__ == "__main__":
     print(all_platforms)
 
     remove(dbconn, GameDAOFactory(), [gameBuilder.get_object()])
-    remove(dbconn, GenreDAOFactory(), genres)
+    remove(dbconn, GenreDAOFactory(observer), genres)
 
     all_games = get_all(dbconn, GameDAOFactory())
     print("\nRemove\n", all_games)
