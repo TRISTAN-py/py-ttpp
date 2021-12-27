@@ -469,8 +469,8 @@ if __name__ == "__main__":
     PZ3 = True
 
     dbcon = DataBaseConnection.get_instance()
-    dbcon.open_connection("db.db")
-    dbcon.init_tables(drop_tables=True)
+    dbcon.open_connection("db.db", reinit_file=True)
+    dbcon.init_tables()
 
     # register observers
     observer = None

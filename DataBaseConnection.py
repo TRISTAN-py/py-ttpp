@@ -1,3 +1,4 @@
+import os
 import sqlite3
 
 
@@ -40,6 +41,7 @@ create table if not exists game_genres (
 class DataBaseConnection(object):
     __instance = None
     connection = None
+    db_file_path: str = None
 
     def __init__(self):
         pass
@@ -51,12 +53,17 @@ class DataBaseConnection(object):
         return cls.__instance.connection
 
     @classmethod
-    def open_connection(cls, db_file_path: str):
+    def open_connection(cls, db_file_path: str, reinit_file: bool = False):
         if cls.__instance.connection:
             # close previous connection
             raise ConnectionError("Close previous connection.")
 
         # open new connection
+        cls.db_file_path = db_file_path
+        if reinit_file:
+            if os.path.exists(db_file_path):
+                os.remove(db_file_path)
+
         cls.__instance.connection = sqlite3.connect(db_file_path)
         return cls.__instance.connection
 
