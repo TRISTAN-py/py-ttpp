@@ -34,8 +34,24 @@ create table if not exists game_genres (
     primary key (game_id, genre_id),
     foreign key (game_id) references games(id) on delete cascade,
     foreign key (genre_id) references genres(id) on delete cascade
-);
-"""]
+);""",
+"""
+create table if not exists roles (
+    id integer primary key autoincrement,
+    name text not null
+);""",
+'''
+insert into roles (name) values ("admin"), ("user");
+''',
+"""
+create table if not exists users (
+    id integer primary key autoincrement,
+    role_id integer not null,
+    login text not null unique,
+    phash text not null,
+    foreign key (role_id) references roles(id) on delete cascade
+);"""
+]
 
 
 class DataBaseConnection(object):

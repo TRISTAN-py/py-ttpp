@@ -7,6 +7,7 @@ from SubjectObserver import Subject, Observer, DAOUpdateObserver
 from DataBaseConnection import DataBaseConnection
 import Game
 import Memento
+import User
 
 
 class DAO(ABC):
@@ -77,6 +78,265 @@ class GenreDAOFactory(DAOFactory):
         if self._observer:
             dao.attach(self._observer)
         return dao
+
+
+class UserDAOFactory(DAOFactory):
+    def __init__(self, dbcon: DataBaseConnection = None):
+        self._dbcon = dbcon
+
+    def create_DAO(self) -> DAO:
+        return UserDAO(self._dbcon)
+
+
+class RoleDAOFactory(DAOFactory):
+    def __init__(self, dbcon: DataBaseConnection = None):
+        self._dbcon = dbcon
+
+    def create_DAO(self) -> DAO:
+        return RoleDAO(self._dbcon)
+
+
+class DAOProxy(DAO):
+    _access = {
+        "admin": -1,
+        "user": -2
+    }
+
+    def __init__(self, subject: DAO):
+        self._subject = subject
+        self._current_user_access = 0
+
+    def login(self, login: str, password: str) -> bool:
+        current_user = filter(UserDAOFactory(self._subject._dbcon),
+                              [{
+                                  "column": "login",
+                                  "value": login,
+                                  "op": "="
+                              }])
+        if any(current_user):
+            assert len(current_user) == 1
+            current_user = {
+                "login": current_user[0][0],
+                "role": current_user[0][1],
+                "phash": current_user[0][2]
+            }
+            if User.User.hash_password(password) == current_user["phash"]:
+                self._current_user_access = self._access[current_user["role"]]
+                return True
+        return False
+
+    def check_access(self) -> bool:
+        return bool(self._current_user_access)
+
+    def get_all(self) -> list:
+        if self.check_access():
+            if self._current_user_access >= self._access["user"]:
+                return self._subject.get_all()
+            else:
+                return list()
+
+    def filter(self, params: list) -> list:
+        if self.check_access():
+            if self._current_user_access >= self._access["user"]:
+                return self._subject.filter(params)
+            else:
+                return list()
+
+    def add(self, object_):
+        if self.check_access():
+            if self._current_user_access >= self._access["admin"]:
+                return self._subject.add(object_)
+            else:
+                raise PermissionError("Unauthorized.")
+        else:
+            raise PermissionError("No user logon.")
+
+    def remove(self, object_):
+        if self.check_access():
+            if self._current_user_access >= self._access["admin"]:
+                return self._subject.remove(object_)
+            else:
+                raise PermissionError("Unauthorized.")
+        else:
+            raise PermissionError("No user logon.")
+
+    def update(self, object_old, object_new):
+        if self.check_access():
+            if self._current_user_access >= self._access["admin"]:
+                return self._subject.update(object_old, object_new)
+            else:
+                raise PermissionError("Unauthorized.")
+        else:
+            raise PermissionError("No user logon.")
+
+
+class RoleDAO(DAO):
+    _: DataBaseConnection = None
+
+    def __init__(self, dbcon: DataBaseConnection = None):
+        self._dbcon = dbcon
+
+    def get_all(self) -> list:
+        con = self._dbcon.get_connection()
+        statement = """select * from roles;"""
+        all = list()
+        with con:
+            for row in con.execute(statement):
+                all.append(row)
+        return all
+
+    def filter(self, params: list) -> list:
+        con = self._dbcon.get_connection()
+        if any(params):
+            base_statement = """select * from roles where """
+            param_statements = [f"{param['column']}{param['op']}:{param['column']}" for param in params]
+            final_statement = base_statement + " and ".join(param_statements)
+            query_params = {param["column"]: param["value"] for param in params}
+            filtered = list()
+            with con:
+                exec = con.execute(final_statement, query_params)
+                for row in exec:  # protected from SQL injection
+                    filtered.append(row)
+            return filtered
+        else:
+            return self.get_all()
+
+    def add(self, role: str):
+        con = self._dbcon.get_connection()
+        base_statement = """insert into roles (name) values (?)"""
+
+        with con:
+            con.execute(base_statement, (role,))
+
+    def remove(self, object_):
+        con = self._dbcon.get_connection()
+        base_statement = """delete from roles where id=:id"""
+        delete_cond = [
+            {
+                "column": "name",
+                "value": object_.name,
+                "op": "="
+            }
+        ]
+        to_delete = self.filter(delete_cond)
+
+        with con:
+            for td in to_delete:
+                con.execute(base_statement, {"id": td[0]})
+
+    def update(self, object_old, object_new):
+        con = self._dbcon.get_connection()
+        base_statement = """update roles set name=:name where id=:id"""
+        update_cond = [
+            {
+                "column": "name",
+                "value": object_old.name,
+                "op": "="
+            }
+        ]
+        to_update = self.filter(update_cond)
+
+        with con:
+            for tu in to_update:
+                con.execute(base_statement, {
+                    "id": tu[0],
+                    "name": object_new.name
+                })
+
+
+class UserDAO(DAO):
+    _dbcon: DataBaseConnection = None
+
+    def __init__(self, dbcon: DataBaseConnection):
+        self._dbcon = dbcon
+
+    def get_all(self) -> list:
+        con = self._dbcon.get_connection()
+        statement = """select login, roles.role role, phash from users join roles on roles.id = users.role_id;"""
+        all = list()
+        with con:
+            for row in con.execute(statement):
+                all.append(row)
+        return all
+
+    def filter(self, params: list) -> list:
+        con = self._dbcon.get_connection()
+        if any(params):
+            base_statement = """select login, roles.name role, phash from users join roles on roles.id = users.role_id where """
+            param_statements = [f"{param['column']}{param['op']}:{param['column']}" for param in params]
+            final_statement = base_statement + " and ".join(param_statements)
+            query_params = {param["column"]: param["value"] for param in params}
+            filtered = list()
+            with con:
+                exec = con.execute(final_statement, query_params)
+                for row in exec:  # protected from SQL injection
+                    filtered.append(row)
+            return filtered
+        else:
+            return self.get_all()
+        pass
+
+    def add(self, object_: User.User):
+        con = self._dbcon.get_connection()
+
+        bs_users = """insert into users (role_id, login, phash) values (?, ?, ?)"""
+
+        avail_roles = get_all(RoleDAOFactory(self._dbcon))
+        avail_roles_dct = {role: id_ for id_, role in avail_roles}
+
+        with con:
+            try:
+                role_id = avail_roles_dct[object_.role]
+            except KeyError:
+                raise sqlite3.IntegrityError()
+
+            cursor = con.cursor()
+            cursor.execute(bs_users, (role_id, object_.login, object_.password))
+
+    def remove(self, object_):
+        con = self._dbcon.get_connection()
+        base_statement = """delete from users where id=:id"""
+        delete_cond = [
+            {
+                "column": "name",
+                "value": object_.name,
+                "op": "="
+            }
+        ]
+        to_delete = self.filter(delete_cond)
+
+        with con:
+            for td in to_delete:
+                con.execute(base_statement, {"id": td[0]})
+
+    def update(self, object_old: User.User, object_new: User.User):
+        con = self._dbcon.get_connection()
+        base_statement = """update users set role_id=:role_id, login=:login, phash=:phash where id=:id"""
+        update_cond = [
+            {
+                "column": "name",
+                "value": object_old.login,
+                "op": "="
+            }
+        ]
+        to_update = self.filter(update_cond)
+
+        avail_roles = get_all(RoleDAOFactory(self._dbcon))
+        avail_roles_dct = {role: id_ for id_, role in avail_roles}
+
+        try:
+            role_id = avail_roles_dct[object_new.role]
+        except KeyError:
+            raise sqlite3.IntegrityError()
+
+        with con:
+            for tu in to_update:
+                con.execute(base_statement, {
+                    "id": tu[0],
+                    "role_id": role_id,
+                    "login": object_new.login,
+                    "phash": object_new.password
+                })
 
 
 class GameDAO(DAO, Subject):
@@ -466,7 +726,8 @@ if __name__ == "__main__":
 
     PZ1 = False
     PZ2 = False
-    PZ3 = True
+    PZ3 = False
+    PZ4 = True
 
     dbcon = DataBaseConnection.get_instance()
     dbcon.open_connection("db.db", reinit_file=True)
@@ -590,3 +851,14 @@ if __name__ == "__main__":
 
         all_games = get_all(gameDAOFactory)
         print(all_games)
+
+    if PZ4:
+        add(UserDAOFactory(dbcon), [User.User("adminusr", "adminpwd", "admin")])
+        add(UserDAOFactory(dbcon), [User.User("usrusr", "usrpwd", "user")])
+
+        userDAOFactory = UserDAOFactory(dbcon)
+        proxy = DAOProxy(userDAOFactory.create_DAO())
+        # access = proxy.login("adminusr", "adminpwd")
+        access = proxy.login("usrusr", "usrpwd")
+        proxy.add(User.User("newusr", "newusrpwd", "user"))
+        print(access)
