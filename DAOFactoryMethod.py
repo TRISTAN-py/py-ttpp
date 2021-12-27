@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 
 import Genre
 import Platform
+from SubjectObserver import Subject, Observer, DAOUpdateObserver
 from DataBaseConnection import DataBaseConnection
 import Game
 
@@ -41,8 +42,17 @@ class GameDAOFactory(DAOFactory):
 
 
 class PlatformDAOFactory(DAOFactory):
+
+    _observer: Observer = None
+
+    def __init__(self, observer=None):
+        self._observer = observer
+
     def create_DAO(self) -> DAO:
-        return PlatformDAO()
+        dao = PlatformDAO()
+        if self._observer:
+            dao.attach(observer)
+        return dao
 
 
 class GenreDAOFactory(DAOFactory):
@@ -155,7 +165,11 @@ class GameDAO(DAO):
                 })
 
 
-class PlatformDAO(DAO):
+class PlatformDAO(DAO, Subject):
+
+    _last_action: dict = None
+    _observers: list = list()
+
     def get_all(self, dbcon: DataBaseConnection) -> list:
         con = dbcon.get_connection()
         statement = """select * from platforms;"""
@@ -188,6 +202,12 @@ class PlatformDAO(DAO):
         with con:
             con.execute(base_statement, (platform.name, ))
 
+        self._last_action = {
+            "action": "add",
+            "object": platform
+        }
+        self.notify()
+
     def remove(self, dbcon: DataBaseConnection, object_):
         con = dbcon.get_connection()
         base_statement = """delete from platforms where id=:id"""
@@ -203,6 +223,12 @@ class PlatformDAO(DAO):
         with con:
             for td in to_delete:
                 con.execute(base_statement, {"id": td[0]})
+
+        self._last_action = {
+            "action": "remove",
+            "object": object_
+        }
+        self.notify()
 
     def update(self, dbcon: DataBaseConnection, object_old: Platform.Platform, object_new: Platform.Platform):
         con = dbcon.get_connection()
@@ -222,6 +248,23 @@ class PlatformDAO(DAO):
                     "id": tu[0],
                     "name": object_new.name
                 })
+
+        self._last_action = {
+            "action": "update",
+            "old": object_old,
+            "new": object_new
+        }
+        self.notify()
+
+    def attach(self, observer: Observer) -> None:
+        self._observers.append(observer)
+
+    def detach(self, observer: Observer) -> None:
+        self._observers.remove(observer)
+
+    def notify(self) -> None:
+        for observer in self._observers:
+            observer.update(self)
 
 
 class GenreDAO(DAO):
@@ -320,6 +363,9 @@ if __name__ == "__main__":
     dbconn.open_connection("db.db")
     dbconn.init_tables()
 
+    # register observers
+    observer = DAOUpdateObserver()
+
     # add data
     genres = [
         Genre.Genre("fps"),
@@ -334,7 +380,7 @@ if __name__ == "__main__":
     ]
 
     add(dbconn, GenreDAOFactory(), genres)
-    add(dbconn, PlatformDAOFactory(), platforms)
+    add(dbconn, PlatformDAOFactory(observer), platforms)
 
     gameBuilder = Game.GameBuilder()
     gameBuilder.set_name("csgo")
