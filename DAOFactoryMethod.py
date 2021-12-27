@@ -6,27 +6,28 @@ import Platform
 from SubjectObserver import Subject, Observer, DAOUpdateObserver
 from DataBaseConnection import DataBaseConnection
 import Game
+import Memento
 
 
 class DAO(ABC):
     @abstractmethod
-    def get_all(self, dbcon: DataBaseConnection) -> list:
+    def get_all(self) -> list:
         pass
 
     @abstractmethod
-    def filter(self, dbcon: DataBaseConnection, params: list) -> list:
+    def filter(self, params: list) -> list:
         pass
 
     @abstractmethod
-    def add(self, dbcon: DataBaseConnection, object_):
+    def add(self, object_):
         pass
 
     @abstractmethod
-    def remove(self, dbcon: DataBaseConnection, object_):
+    def remove(self, object_):
         pass
 
     @abstractmethod
-    def update(self, dbcon: DataBaseConnection, object_old, object_new):
+    def update(self, object_old, object_new):
         pass
 
 
@@ -37,54 +38,57 @@ class DAOFactory(ABC):
 
 
 class GameDAOFactory(DAOFactory):
-
     _observer: Observer = None
 
-    def __init__(self, observer=None):
+    def __init__(self, dbcon: DataBaseConnection = None, observer=None):
+        self._dbcon = dbcon
         self._observer = observer
 
     def create_DAO(self) -> DAO:
-        dao = GameDAO()
+        dao = GameDAO(self._dbcon)
         if self._observer:
             dao.attach(self._observer)
         return dao
 
 
 class PlatformDAOFactory(DAOFactory):
-
     _observer: Observer = None
 
-    def __init__(self, observer=None):
+    def __init__(self, dbcon: DataBaseConnection = None, observer=None):
+        self._dbcon = dbcon
         self._observer = observer
 
     def create_DAO(self) -> DAO:
-        dao = PlatformDAO()
+        dao = PlatformDAO(self._dbcon)
         if self._observer:
             dao.attach(self._observer)
         return dao
 
 
 class GenreDAOFactory(DAOFactory):
-
     _observer: Observer = None
 
-    def __init__(self, observer=None):
+    def __init__(self, dbcon: DataBaseConnection = None, observer=None):
+        self._dbcon = dbcon
         self._observer = observer
 
     def create_DAO(self) -> DAO:
-        dao = GenreDAO()
+        dao = GenreDAO(self._dbcon)
         if self._observer:
             dao.attach(self._observer)
         return dao
 
 
 class GameDAO(DAO, Subject):
-
     _last_action: dict = None
     _observers: list = list()
+    _dbcon: DataBaseConnection = None
 
-    def get_all(self, dbcon: DataBaseConnection) -> list:
-        con = dbcon.get_connection()
+    def __init__(self, dbcon: DataBaseConnection = None):
+        self._dbcon = dbcon
+
+    def get_all(self) -> list:
+        con = self._dbcon.get_connection()
         statement = """select * from games;"""
         all = list()
         with con:
@@ -92,8 +96,8 @@ class GameDAO(DAO, Subject):
                 all.append(row)
         return all
 
-    def filter(self, dbcon: DataBaseConnection, params: list) -> list:
-        con = dbcon.get_connection()
+    def filter(self, params: list) -> list:
+        con = self._dbcon.get_connection()
         if any(params):
             base_statement = """select * from games where """
             param_statements = [f"{param['column']}{param['op']}:{param['column']}" for param in params]
@@ -106,18 +110,18 @@ class GameDAO(DAO, Subject):
                     filtered.append(row)
             return filtered
         else:
-            return self.get_all(dbcon)
+            return self.get_all()
 
-    def add(self, dbcon: DataBaseConnection, game: Game.Game):
-        con = dbcon.get_connection()
+    def add(self, game: Game.Game):
+        con = self._dbcon.get_connection()
 
         bs_game = """insert into games (name, price) values (?, ?)"""
         bs_game_platforms = """insert into game_platforms (game_id, platform_id) values (?, ?)"""
         bs_game_genres = """insert into game_genres (game_id, genre_id) values (?, ?)"""
 
-        avail_platforms = get_all(dbcon, PlatformDAOFactory())
+        avail_platforms = get_all(PlatformDAOFactory(self._dbcon))
         avail_platforms_dct = {platform: id_ for id_, platform in avail_platforms}
-        avail_genres = get_all(dbcon, GenreDAOFactory())
+        avail_genres = get_all(GenreDAOFactory(self._dbcon))
         avail_genres_dct = {genre: id_ for id_, genre in avail_genres}
 
         with con:
@@ -145,8 +149,8 @@ class GameDAO(DAO, Subject):
         }
         self.notify()
 
-    def remove(self, dbcon: DataBaseConnection, object_):
-        con = dbcon.get_connection()
+    def remove(self, object_):
+        con = self._dbcon.get_connection()
         base_statement = """delete from games where id=:id"""
         delete_cond = [
             {
@@ -160,7 +164,7 @@ class GameDAO(DAO, Subject):
                 "op": "="
             }
         ]
-        to_delete = self.filter(dbcon, delete_cond)
+        to_delete = self.filter(delete_cond)
 
         with con:
             for td in to_delete:
@@ -172,8 +176,8 @@ class GameDAO(DAO, Subject):
         }
         self.notify()
 
-    def update(self, dbcon: DataBaseConnection, object_old: Game.Game, object_new: Game.Game):
-        con = dbcon.get_connection()
+    def update(self, object_old: Game.Game, object_new: Game.Game):
+        con = self._dbcon.get_connection()
         base_statement = """update games set name=:name, price=:price where id=:id"""
 
         update_cond = [
@@ -188,7 +192,7 @@ class GameDAO(DAO, Subject):
                 "op": "="
             }
         ]
-        to_update = self.filter(dbcon, update_cond)
+        to_update = self.filter(update_cond)
 
         with con:
             for tu in to_update:
@@ -215,14 +219,27 @@ class GameDAO(DAO, Subject):
         for observer in self._observers:
             observer.update(self)
 
+    def save(self) -> Memento.Memento:
+        return Memento.GameDAOMemento(self._last_action)
+
+    def restore(self, memento: Memento.Memento):
+        self._last_action = memento.get_state()
+        if self._last_action["action"] == "update":
+            self.update(self._last_action["new"], self._last_action["old"])
+        else:
+            raise NotImplementedError
+
 
 class PlatformDAO(DAO, Subject):
-
     _last_action: dict = None
     _observers: list = list()
+    _dbcon: DataBaseConnection = None
 
-    def get_all(self, dbcon: DataBaseConnection) -> list:
-        con = dbcon.get_connection()
+    def __init__(self, dbcon: DataBaseConnection = None):
+        self._dbcon = dbcon
+
+    def get_all(self) -> list:
+        con = self._dbcon.get_connection()
         statement = """select * from platforms;"""
         all = list()
         with con:
@@ -230,8 +247,8 @@ class PlatformDAO(DAO, Subject):
                 all.append(row)
         return all
 
-    def filter(self, dbcon: DataBaseConnection, params: list) -> list:
-        con = dbcon.get_connection()
+    def filter(self, params: list) -> list:
+        con = self._dbcon.get_connection()
         if any(params):
             base_statement = """select * from platforms where """
             param_statements = [f"{param['column']}{param['op']}:{param['column']}" for param in params]
@@ -244,14 +261,14 @@ class PlatformDAO(DAO, Subject):
                     filtered.append(row)
             return filtered
         else:
-            return self.get_all(dbcon)
+            return self.get_all()
 
-    def add(self, dbcon: DataBaseConnection, platform: Platform.Platform):
-        con = dbcon.get_connection()
+    def add(self, platform: Platform.Platform):
+        con = self._dbcon.get_connection()
         base_statement = """insert into platforms (name) values (?)"""
 
         with con:
-            con.execute(base_statement, (platform.name, ))
+            con.execute(base_statement, (platform.name,))
 
         self._last_action = {
             "action": "add",
@@ -259,8 +276,8 @@ class PlatformDAO(DAO, Subject):
         }
         self.notify()
 
-    def remove(self, dbcon: DataBaseConnection, object_):
-        con = dbcon.get_connection()
+    def remove(self, object_):
+        con = self._dbcon.get_connection()
         base_statement = """delete from platforms where id=:id"""
         delete_cond = [
             {
@@ -269,7 +286,7 @@ class PlatformDAO(DAO, Subject):
                 "op": "="
             }
         ]
-        to_delete = self.filter(dbcon, delete_cond)
+        to_delete = self.filter(delete_cond)
 
         with con:
             for td in to_delete:
@@ -281,8 +298,8 @@ class PlatformDAO(DAO, Subject):
         }
         self.notify()
 
-    def update(self, dbcon: DataBaseConnection, object_old: Platform.Platform, object_new: Platform.Platform):
-        con = dbcon.get_connection()
+    def update(self, object_old: Platform.Platform, object_new: Platform.Platform):
+        con = self._dbcon.get_connection()
         base_statement = """update platforms set name=:name where id=:id"""
         update_cond = [
             {
@@ -291,7 +308,7 @@ class PlatformDAO(DAO, Subject):
                 "op": "="
             }
         ]
-        to_update = self.filter(dbcon, update_cond)
+        to_update = self.filter(update_cond)
 
         with con:
             for tu in to_update:
@@ -319,12 +336,15 @@ class PlatformDAO(DAO, Subject):
 
 
 class GenreDAO(DAO, Subject):
-
     _last_action: dict = None
     _observers: list = list()
+    _dbcon: DataBaseConnection = None
 
-    def get_all(self, dbcon: DataBaseConnection) -> list:
-        con = dbcon.get_connection()
+    def __init__(self, dbcon: DataBaseConnection = None):
+        self._dbcon = dbcon
+
+    def get_all(self) -> list:
+        con = self._dbcon.get_connection()
         statement = """select * from genres;"""
         all = list()
         with con:
@@ -332,8 +352,8 @@ class GenreDAO(DAO, Subject):
                 all.append(row)
         return all
 
-    def filter(self, dbcon: DataBaseConnection, params: list) -> list:
-        con = dbcon.get_connection()
+    def filter(self, params: list) -> list:
+        con = self._dbcon.get_connection()
         if any(params):
             base_statement = """select * from genres where """
             param_statements = [f"{param['column']}{param['op']}:{param['column']}" for param in params]
@@ -346,14 +366,14 @@ class GenreDAO(DAO, Subject):
                     filtered.append(row)
             return filtered
         else:
-            return self.get_all(dbcon)
+            return self.get_all()
 
-    def add(self, dbcon: DataBaseConnection, genre: Genre.Genre):
-        con = dbcon.get_connection()
+    def add(self, genre: Genre.Genre):
+        con = self._dbcon.get_connection()
         base_statement = """insert into genres (name) values (?)"""
 
         with con:
-            con.execute(base_statement, (genre.name, ))
+            con.execute(base_statement, (genre.name,))
 
         self._last_action = {
             "action": "add",
@@ -361,8 +381,8 @@ class GenreDAO(DAO, Subject):
         }
         self.notify()
 
-    def remove(self, dbcon: DataBaseConnection, object_):
-        con = dbcon.get_connection()
+    def remove(self, object_):
+        con = self._dbcon.get_connection()
         base_statement = """delete from genres where id=:id"""
         delete_cond = [
             {
@@ -371,7 +391,7 @@ class GenreDAO(DAO, Subject):
                 "op": "="
             }
         ]
-        to_delete = self.filter(dbcon, delete_cond)
+        to_delete = self.filter(delete_cond)
 
         with con:
             for td in to_delete:
@@ -383,8 +403,8 @@ class GenreDAO(DAO, Subject):
         }
         self.notify()
 
-    def update(self, dbcon: DataBaseConnection, object_old: Genre.Genre, object_new: Genre.Genre):
-        con = dbcon.get_connection()
+    def update(self, object_old: Genre.Genre, object_new: Genre.Genre):
+        con = self._dbcon.get_connection()
         base_statement = """update genres set name=:name where id=:id"""
         update_cond = [
             {
@@ -393,7 +413,7 @@ class GenreDAO(DAO, Subject):
                 "op": "="
             }
         ]
-        to_update = self.filter(dbcon, update_cond)
+        to_update = self.filter(update_cond)
 
         with con:
             for tu in to_update:
@@ -420,35 +440,47 @@ class GenreDAO(DAO, Subject):
             observer.update(self)
 
 
-def get_all(dbcon: DataBaseConnection, dao_factory: DAOFactory) -> list:
-    return dao_factory.create_DAO().get_all(dbcon)
+def get_all(dao_factory: DAOFactory) -> list:
+    return dao_factory.create_DAO().get_all()
 
 
-def filter(dbcon: DataBaseConnection, dao_factory: DAOFactory, params: list) -> list:
-    return dao_factory.create_DAO().filter(dbcon, params)
+def filter(dao_factory: DAOFactory, params: list) -> list:
+    return dao_factory.create_DAO().filter(params)
 
 
-def add(dbcon: DataBaseConnection, dao_factory: DAOFactory, objects: list) -> None:
+def add(dao_factory: DAOFactory, objects: list) -> None:
     for object_ in objects:
-        dao_factory.create_DAO().add(dbcon, object_)
+        dao_factory.create_DAO().add(object_)
 
 
-def remove(dbcon: DataBaseConnection, dao_factory: DAOFactory, objects: list) -> None:
+def remove(dao_factory: DAOFactory, objects: list) -> None:
     for object_ in objects:
-        dao_factory.create_DAO().remove(dbcon, object_)
+        dao_factory.create_DAO().remove(object_)
 
 
-def update(dbcon: DataBaseConnection, dao_factory: DAOFactory, object_old, object_new) -> None:
-    dao_factory.create_DAO().update(dbcon, object_old, object_new)
+def update(dao_factory: DAOFactory, object_old, object_new) -> None:
+    dao_factory.create_DAO().update(object_old, object_new)
 
 
 if __name__ == "__main__":
-    dbconn = DataBaseConnection.get_instance()
-    dbconn.open_connection("db.db")
-    dbconn.init_tables()
+
+    PZ1 = False
+    PZ2 = False
+    PZ3 = True
+
+    dbcon = DataBaseConnection.get_instance()
+    dbcon.open_connection("db.db")
+    dbcon.init_tables(drop_tables=True)
 
     # register observers
-    observer = DAOUpdateObserver()
+    observer = None
+    if PZ2:
+        observer = DAOUpdateObserver()
+
+    # create factories
+    genreDAOFactory = GenreDAOFactory(dbcon, observer)
+    gameDAOFactory = GameDAOFactory(dbcon, observer)
+    platformDAOFactory = PlatformDAOFactory(dbcon, observer)
 
     # add data
     genres = [
@@ -463,54 +495,98 @@ if __name__ == "__main__":
         Platform.Platform("x")
     ]
 
-    add(dbconn, GenreDAOFactory(), genres)
-    add(dbconn, PlatformDAOFactory(observer), platforms)
+    add(genreDAOFactory, genres)
+    add(platformDAOFactory, platforms)
+    print(get_all(genreDAOFactory))
 
     gameBuilder = Game.GameBuilder()
     gameBuilder.set_name("csgo")
     gameBuilder.set_price(11.99)
     gameBuilder.add_genres(["fps", "mmo"])
     gameBuilder.add_platform_ids(["pc", "x"])
-    add(dbconn, GameDAOFactory(), [gameBuilder.get_object()])
+    add(gameDAOFactory, [gameBuilder.get_object()])
 
     gameBuilder = Game.GameBuilder()
     gameBuilder.set_name("dota")
     gameBuilder.set_price(0.)
     gameBuilder.add_genres(["moba", "mmo"])
     gameBuilder.add_platform_ids(["pc"])
-    add(dbconn, GameDAOFactory(), [gameBuilder.get_object()])
+    add(gameDAOFactory, [gameBuilder.get_object()])
 
-    all_games = get_all(dbconn, GameDAOFactory())
-    print(all_games)
-    all_platforms = get_all(dbconn, PlatformDAOFactory())
-    print(all_platforms, "\nFilter:")
+    if PZ1:
+        all_games = get_all(gameDAOFactory)
+        print(all_games)
+        all_platforms = get_all(gameDAOFactory)
+        print(all_platforms, "\nFilter:")
 
-    # filter
-    params = [
-        {
-            "column": "price",
-            "value": 0,
-            "op": ">"
-        }
-    ]
+        # filter
+        params = [
+            {
+                "column": "price",
+                "value": 0,
+                "op": ">"
+            }
+        ]
 
-    f_games = filter(dbconn, GameDAOFactory(), params)
-    print(f_games, "\nUpdate:")
+        f_games = filter(gameDAOFactory, params)
+        print(f_games, "\nUpdate:")
 
-    update(dbconn, GameDAOFactory(observer), gameBuilder.get_object(), Game.Game("1.6", 5.99))
-    update(dbconn, PlatformDAOFactory(), platforms[0], Platform.Platform("switch"))
+        update(gameDAOFactory, gameBuilder.get_object(),
+               Game.Game("1.6", 5.99))
+        update(platformDAOFactory, platforms[0], Platform.Platform("expensive_platform"))
 
-    all_games = get_all(dbconn, GameDAOFactory())
-    print(all_games)
-    all_platforms = get_all(dbconn, PlatformDAOFactory())
-    print(all_platforms)
+        all_games = get_all(gameDAOFactory)
+        print(all_games)
+        all_platforms = get_all(platformDAOFactory)
+        print(all_platforms)
 
-    remove(dbconn, GameDAOFactory(), [gameBuilder.get_object()])
-    remove(dbconn, GenreDAOFactory(observer), genres)
+        remove(gameDAOFactory, [gameBuilder.get_object()])
+        remove(genreDAOFactory, genres)
 
-    all_games = get_all(dbconn, GameDAOFactory())
-    print("\nRemove\n", all_games)
-    all_platforms = get_all(dbconn, PlatformDAOFactory())
-    print(all_platforms)
-    all_genres = get_all(dbconn, GenreDAOFactory())
-    print(all_genres)
+        all_games = get_all(gameDAOFactory)
+        print("\nRemove\n", all_games)
+        all_platforms = get_all(platformDAOFactory)
+        print(all_platforms)
+        all_genres = get_all(genreDAOFactory)
+        print(all_genres)
+
+    if PZ3:
+        all_games = get_all(gameDAOFactory)
+        print(all_games)
+
+        gameDAO = gameDAOFactory.create_DAO()
+        result_history = Memento.GameDAOHistory(gameDAO)
+        result_history.backup()
+
+        gameDAO.update(gameBuilder.get_object(), Game.Game("1.6", 5.99))
+        result_history.backup()
+
+        all_games = get_all(gameDAOFactory)
+        print(all_games)
+
+        gameDAO.update(Game.Game("1.6", 5.99), Game.Game("update1", 699999.99))
+        result_history.backup()
+
+        all_games = get_all(gameDAOFactory)
+        print(all_games)
+
+        gameDAO.update(Game.Game("update1", 699999.99), Game.Game("update2", 799999.99))
+        result_history.backup()
+
+        all_games = get_all(gameDAOFactory)
+        print(all_games)
+
+        result_history.undo()
+
+        all_games = get_all(gameDAOFactory)
+        print(all_games)
+
+        result_history.undo()
+
+        all_games = get_all(gameDAOFactory)
+        print(all_games)
+
+        result_history.undo()
+
+        all_games = get_all(gameDAOFactory)
+        print(all_games)
